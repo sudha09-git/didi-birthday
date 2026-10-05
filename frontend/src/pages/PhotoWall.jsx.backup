@@ -1,0 +1,738 @@
+import { useState, useEffect, useRef } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { useNavigate } from 'react-router-dom'
+import { api } from '../services/api'
+import StarField from '../components/StarField'
+import FairyLights from '../components/FairyLights'
+import { useMemoryAudio } from '../hooks/useMemoryAudio'
+
+// ---------------------------------------------------------------------------
+// Static photo discovery via Vite's import.meta.glob.
+//
+// Files under public/ are served as static assets — they cannot be enumerated
+// with normal JS filesystem APIs in the browser.  import.meta.glob runs at
+// BUILD TIME and produces a map whose keys are the matching file paths as Vite
+// sees them (relative to the project root, starting with /public/…).
+//
+// { eager: true, query: '?url' } makes Vite inline the public URL string for
+// each file directly into the bundle, so no dynamic import() calls happen at
+// runtime — just a plain object of { path: url } entries.
+// ---------------------------------------------------------------------------
+const PHOTO_GLOB = import.meta.glob(
+  '/public/photos/memory-*.jpg',
+  { eager: true, query: '?url' }
+)
+
+/**
+ * Build the canonical list of static photos from the glob result.
+ * Returns an array sorted naturally by filename (01 < 02 < … < 11 < 12 …).
+ * Shape: { id, filename, order, category, caption }
+ * `id` is set to the 1-based index so the list is self-consistent even
+ * when no backend data is present.
+ */
+function buildStaticPhotoList() {
+  // PHOTO_GLOB keys look like "/public/photos/memory-03.jpg"
+  // We only need the bare filename and the serving URL.
+  const entries = Object.entries(PHOTO_GLOB).map(([path, mod]) => {
+    const filename = path.split('/').pop()      // "memory-03.jpg"
+    // mod is the module object from eager import; the default export is the URL
+    const url = mod?.default ?? `/photos/${filename}`
+    return { filename, url }
+  })
+
+  // Natural sort by filename so "memory-09" < "memory-10" < "memory-11"
+  entries.sort((a, b) => a.filename.localeCompare(b.filename, undefined, { numeric: true }))
+
+  return entries.map((e, i) => ({
+    id: i + 1,
+    filename: e.filename,
+    order: i + 1,
+    category: 'general',
+    caption: null,
+  }))
+}
+
+const STATIC_PHOTOS = buildStaticPhotoList()
+
+// ---------------------------------------------------------------------------
+// Layout — distributes N photos across 3 horizontal rope rows.
+//
+// Design goals (same aesthetic as the original hand-tuned 7-photo table):
+//   • Natural spread: photos don't align into a strict grid
+//   • Each photo has a slightly different size, rotation, and Y offset
+//   • Distribution is as even as possible across the 3 ropes
+//   • Works for any N (7, 11, 20 …)
+// ---------------------------------------------------------------------------
+
+/** Deterministic pseudo-random seeded on index — no Math.random() calls so
+ *  layout is stable across re-renders. */
+function seededRand(seed) {
+  // Simple LCG
+  let s = (seed * 1664525 + 1013904223) & 0xffffffff
+  return (s >>> 0) / 0xffffffff
+}
+
+/**
+ * Returns { xPct, yPct, rotation, widthPx } for photo at `index` of `total`.
+ *
+ * Rope Y centres: row 0 → ~16%, row 1 → ~42%, row 2 → ~68%
+ * Photos are assigned to rows in a round-robin that slightly favours wider
+ * distribution (row 0 gets extras first so the top is never sparse).
+ */
+function getPhotoLayout(index, total) {
+  const ROW_Y   = [16, 42, 68]   // % from top — rope centres
+  const ROW_CNT = 3
+
+  // Distribute photos: fill rows as evenly as possible
+  const base    = Math.floor(total / ROW_CNT)
+  const extras  = total % ROW_CNT            // first `extras` rows get one more
+
+  // Which row does this index land in?
+  let row = 0
+  let cumulative = 0
+  for (let r = 0; r < ROW_CNT; r++) {
+    const rowSize = base + (r < extras ? 1 : 0)
+    if (index < cumulative + rowSize) { row = r; break }
+    cumulative += rowSize
+  }
+
+  // Cumulative start of this row
+  let rowOffset = 0
+  for (let r = 0; r < row; r++) rowOffset += base + (r < extras ? 1 : 0)
+  const posInRow  = index - rowOffset
+  const rowSize   = base + (row < extras ? 1 : 0)
+
+  // Spread photos evenly across 6%–94% of the wall width within the row.
+  // Small horizontal jitter keeps them from looking mechanical.
+  const r0 = seededRand(index * 3 + 1)
+  const xBase = rowSize === 1
+    ? 50
+    : 6 + (posInRow / (rowSize - 1)) * 88
+  const xJitter = (r0 - 0.5) * 6          // ±3% jitter
+  const xPct = Math.max(8, Math.min(92, xBase + xJitter))
+
+  // Y: rope centre ± a small offset for a natural hanging feel
+  const r1 = seededRand(index * 7 + 2)
+  const yPct = ROW_Y[row] + (r1 - 0.5) * 8   // ±4% vertical jitter
+
+  // Rotation: ±9°, alternates sign so adjacent photos don't all lean the same way
+  const r2 = seededRand(index * 11 + 3)
+  const rotation = (r2 - 0.5) * 18            // –9° to +9°
+
+  // Width: 140–178 px, varies per photo
+  const r3 = seededRand(index * 13 + 5)
+  const widthPx = Math.round(140 + r3 * 38)
+
+  return { xPct, yPct, rotation, widthPx }
+}
+
+// ---------------------------------------------------------------------------
+// Lightbox
+// ---------------------------------------------------------------------------
+function Lightbox({ photos, currentIndex, onClose, onNext, onPrev }) {
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.key === 'Escape')     onClose()
+      if (e.key === 'ArrowRight') onNext()
+      if (e.key === 'ArrowLeft')  onPrev()
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onClose, onNext, onPrev])
+
+  const photo = photos[currentIndex]
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 200,
+        background: 'rgba(5,11,26,0.95)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        backdropFilter: 'blur(8px)',
+      }}
+      onClick={onClose}
+    >
+      <motion.div
+        key={currentIndex}
+        initial={{ scale: 0.85, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.85, opacity: 0 }}
+        onClick={e => e.stopPropagation()}
+        style={{
+          position: 'relative',
+          maxWidth: 'min(90vw, 700px)',
+          maxHeight: '85vh',
+        }}
+      >
+        <img
+          src={`/photos/${photo.filename}`}
+          alt={photo.caption || 'Memory'}
+          onError={e => { e.target.src = '/photos/placeholder.svg' }}
+          style={{
+            width: '100%', height: 'auto',
+            maxHeight: '80vh', objectFit: 'contain',
+            borderRadius: '12px', display: 'block',
+            boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+          }}
+        />
+        {/* Close */}
+        <button
+          onClick={onClose}
+          aria-label="Close"
+          style={{
+            position: 'absolute', top: '-16px', right: '-16px',
+            width: '36px', height: '36px', borderRadius: '50%',
+            background: 'rgba(255,255,255,0.1)',
+            border: '1px solid rgba(255,255,255,0.2)',
+            color: 'white', fontSize: '18px',
+            cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+        >×</button>
+        {/* Nav arrows */}
+        {photos.length > 1 && (
+          <>
+            <button
+              onClick={e => { e.stopPropagation(); onPrev() }}
+              aria-label="Previous"
+              style={{
+                position: 'absolute', left: '-20px', top: '50%', transform: 'translateY(-50%)',
+                width: '40px', height: '40px', borderRadius: '50%',
+                background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)',
+                color: 'white', fontSize: '20px', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >‹</button>
+            <button
+              onClick={e => { e.stopPropagation(); onNext() }}
+              aria-label="Next"
+              style={{
+                position: 'absolute', right: '-20px', top: '50%', transform: 'translateY(-50%)',
+                width: '40px', height: '40px', borderRadius: '50%',
+                background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)',
+                color: 'white', fontSize: '20px', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >›</button>
+          </>
+        )}
+      </motion.div>
+    </motion.div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// DraggablePhoto
+// Receives absolute pixel position {x, y} from parent, reports changes via
+// onPositionChange(id, {x, y}).  Uses Pointer Events + setPointerCapture so
+// a single code path handles both mouse and touch.
+// ---------------------------------------------------------------------------
+function DraggablePhoto({ photo, layout, position, onPositionChange, onClick }) {
+  const divRef      = useRef(null)
+  const dragging    = useRef(false)
+  const didDrag     = useRef(false)
+  const dragStart   = useRef({ px: 0, py: 0, ox: 0, oy: 0 })
+  const [active, setActive] = useState(false)
+  const [imgError, setImgError] = useState(false)
+
+  const DRAG_THRESHOLD = 5   // px — below this it's a click, not a drag
+
+  const handlePointerDown = (e) => {
+    if (e.button === 2) return           // ignore right-click
+    e.preventDefault()
+    e.stopPropagation()
+
+    dragging.current  = true
+    didDrag.current   = false
+    dragStart.current = {
+      px: e.clientX,
+      py: e.clientY,
+      ox: position.x,
+      oy: position.y,
+    }
+
+    divRef.current.setPointerCapture(e.pointerId)
+    setActive(true)
+  }
+
+  const handlePointerMove = (e) => {
+    if (!dragging.current) return
+    const dx = e.clientX - dragStart.current.px
+    const dy = e.clientY - dragStart.current.py
+
+    if (!didDrag.current && Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return
+
+    didDrag.current = true
+    onPositionChange(photo.id, {
+      x: dragStart.current.ox + dx,
+      y: dragStart.current.oy + dy,
+    })
+  }
+
+  const handlePointerUp = (e) => {
+    if (!dragging.current) return
+    dragging.current = false
+    setActive(false)
+    // If barely moved, treat as click → open lightbox
+    if (!didDrag.current) {
+      onClick()
+    }
+  }
+
+  const width  = layout.widthPx || 155
+  const imgSrc = `/photos/${photo.filename}`
+
+  return (
+    <motion.div
+      ref={divRef}
+      initial={{ opacity: 0, y: -40, scale: 0.8 }}
+      animate={{ opacity: 1, y: 0,   scale: 1   }}
+      transition={{
+        delay: photo.order * 0.18,
+        duration: 0.6,
+        type: 'spring',
+        stiffness: 120,
+        damping: 14,
+      }}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
+      style={{
+        position: 'absolute',
+        left:  `${position.x}px`,
+        top:   `${position.y}px`,
+        width: `${width}px`,
+        transform: `rotate(${layout.rotation}deg)`,
+        cursor: active ? 'grabbing' : 'grab',
+        zIndex: active ? 100 : 1,
+        userSelect: 'none',
+        touchAction: 'none',
+        willChange: 'left, top',
+      }}
+    >
+      {/* Clip */}
+      <div style={{
+        position: 'absolute', top: '-10px', left: '50%',
+        transform: 'translateX(-50%)',
+        width: '18px', height: '18px',
+        background: 'rgba(180,180,160,0.9)',
+        borderRadius: '3px 3px 0 0',
+        zIndex: 2,
+      }} />
+      {/* Photo frame */}
+      <div style={{
+        padding: '8px 8px 28px 8px',
+        background: imgError ? '#1a2840' : 'white',
+        boxShadow: '2px 4px 16px rgba(0,0,0,0.5)',
+        borderRadius: '2px',
+      }}>
+        {imgError ? (
+          <div style={{
+            width: '100%', height: `${width * 0.75}px`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: 'rgba(200,215,255,0.3)', fontSize: '24px',
+          }}>
+            📷
+          </div>
+        ) : (
+          <img
+            key={imgSrc}
+            src={imgSrc}
+            alt={photo.caption || 'Memory'}
+            onError={() => setImgError(true)}
+            draggable={false}
+            style={{
+              width: '100%',
+              height: `${width * 0.75}px`,
+              objectFit: 'cover',
+              display: 'block',
+            }}
+          />
+        )}
+      </div>
+    </motion.div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Music Control
+// ---------------------------------------------------------------------------
+function MusicControl({ audioReady, isPlaying, needsPrompt, volume, togglePlay, setVolume, startMusic }) {
+  if (!audioReady) return null
+
+  return (
+    <>
+      {/* "Press play" prompt — shown only when autoplay was blocked */}
+      <AnimatePresence>
+        {needsPrompt && (
+          <motion.div
+            key="music-prompt"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0  }}
+            exit={{ opacity: 0, y: 20    }}
+            transition={{ duration: 0.5  }}
+            style={{
+              position: 'fixed', bottom: '24px', left: '50%',
+              transform: 'translateX(-50%)',
+              zIndex: 300,
+              background: 'rgba(10,18,40,0.92)',
+              border: '1px solid rgba(240,208,106,0.35)',
+              borderRadius: '40px',
+              padding: '10px 22px',
+              display: 'flex', alignItems: 'center', gap: '10px',
+              boxShadow: '0 4px 24px rgba(0,0,0,0.5)',
+              backdropFilter: 'blur(10px)',
+              cursor: 'pointer', userSelect: 'none',
+            }}
+            onClick={startMusic}
+            role="button"
+            tabIndex={0}
+            aria-label="Press play to start background music"
+            onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && startMusic()}
+          >
+            <span style={{ fontSize: '18px' }}>🎵</span>
+            <span style={{
+              color: 'rgba(240,208,106,0.9)', fontSize: '13px',
+              letterSpacing: '0.5px', fontStyle: 'italic',
+            }}>
+              Press play to start the memories
+            </span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Persistent music toggle — top-right corner of the wall */}
+      {!needsPrompt && (
+        <div style={{
+          position: 'absolute', top: '12px', right: '14px',
+          zIndex: 50,
+          display: 'flex', alignItems: 'center', gap: '8px',
+        }}>
+          <input
+            type="range" min="0" max="1" step="0.05"
+            value={volume}
+            onChange={e => setVolume(parseFloat(e.target.value))}
+            aria-label="Music volume"
+            style={{
+              width: '64px',
+              accentColor: 'rgba(240,208,106,0.8)',
+              cursor: 'pointer',
+              opacity: isPlaying ? 0.85 : 0.4,
+              transition: 'opacity 0.3s',
+            }}
+          />
+          <button
+            onClick={togglePlay}
+            aria-label={isPlaying ? 'Pause music' : 'Play music'}
+            title={isPlaying ? 'Music On' : 'Music Off'}
+            style={{
+              background: 'rgba(10,18,40,0.75)',
+              border: '1px solid rgba(240,208,106,0.3)',
+              borderRadius: '50%',
+              width: '34px', height: '34px',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              cursor: 'pointer', fontSize: '16px',
+              color: isPlaying ? 'rgba(240,208,106,0.9)' : 'rgba(200,215,255,0.4)',
+              transition: 'color 0.3s, border-color 0.3s',
+              backdropFilter: 'blur(6px)', flexShrink: 0,
+            }}
+          >
+            {isPlaying ? '🎵' : '🔇'}
+          </button>
+        </div>
+      )}
+    </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// localStorage key for persisting photo positions
+// ---------------------------------------------------------------------------
+const LS_KEY = 'pooja-photo-wall-positions'
+
+function loadSavedPositions() {
+  try {
+    const raw = localStorage.getItem(LS_KEY)
+    if (raw) return JSON.parse(raw)
+  } catch (_) {}
+  return null
+}
+
+function savePositions(positions) {
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify(positions))
+  } catch (_) {}
+}
+
+/**
+ * Convert a layout's xPct/yPct (percentage of wall) into absolute pixel
+ * coordinates, accounting for the photo width so the centre is at xPct.
+ */
+function layoutToPixels(layout, wallW, wallH) {
+  const w = layout.widthPx || 155
+  // xPct is the horizontal centre of the photo; left edge = centre - halfWidth
+  const x = (layout.xPct / 100) * wallW - w / 2
+  const y = (layout.yPct / 100) * wallH
+  return { x, y }
+}
+
+// ---------------------------------------------------------------------------
+// Main PhotoWall
+// ---------------------------------------------------------------------------
+export default function PhotoWall() {
+  const navigate = useNavigate()
+  const [photos, setPhotos]           = useState([])
+  const [loading, setLoading]         = useState(true)
+  const [lightboxIndex, setLightboxIndex] = useState(null)
+  // photoPositions: { [photoId]: { x, y } }  — absolute px inside the wall div
+  const [photoPositions, setPhotoPositions] = useState({})
+  const positionsInitialised = useRef(false)
+  const wallRef = useRef(null)
+  const { audioReady, isPlaying, needsPrompt, volume, togglePlay, setVolume, startMusic } = useMemoryAudio()
+
+  useEffect(() => {
+    // Try the API first.  If it succeeds we merge DB metadata (captions, order)
+    // with the static file list.  If it fails we fall back to the static list.
+    api.getPhotos()
+      .then(data => {
+        const apiPhotos = data.photos || []
+        // Build a map of filename → API record so we can enrich static entries
+        const apiMap = {}
+        apiPhotos.forEach(p => { apiMap[p.filename] = p })
+
+        // Merge: static list drives the set of files; API provides metadata.
+        // Photos that are in the API but not on disk are silently dropped
+        // because there is no image to show anyway.
+        const merged = STATIC_PHOTOS.map((sp, i) => ({
+          ...sp,
+          ...(apiMap[sp.filename] || {}),
+          // Ensure order is numeric and continuous even if DB data is stale
+          order: i + 1,
+        }))
+
+        // If the API returned photos not yet discovered by glob (edge case:
+        // file exists on server but not bundled), skip them — they can't be
+        // served in a static build anyway.
+
+        setPhotos(merged)
+        setLoading(false)
+      })
+      .catch(() => {
+        // No backend available — use static list directly
+        setPhotos(STATIC_PHOTOS)
+        setLoading(false)
+      })
+  }, [])
+
+  // Once photos are loaded and the wall has been rendered, initialise positions.
+  // We only do this ONCE per session (guard with positionsInitialised ref) so
+  // that subsequent re-renders don't reset dragged positions.
+  useEffect(() => {
+    if (loading || photos.length === 0 || positionsInitialised.current) return
+    if (!wallRef.current) return
+
+    const saved = loadSavedPositions()
+    if (saved && Object.keys(saved).length > 0) {
+      setPhotoPositions(saved)
+      positionsInitialised.current = true
+      return
+    }
+
+    // Compute default pixel positions from xPct/yPct layout values
+    const rect = wallRef.current.getBoundingClientRect()
+    const wallW = rect.width  || wallRef.current.offsetWidth  || 1200
+    const wallH = rect.height || wallRef.current.offsetHeight || 700
+
+    const initial = {}
+    photos.forEach((photo, i) => {
+      const layout = getPhotoLayout(i, photos.length)
+      initial[photo.id] = layoutToPixels(layout, wallW, wallH)
+    })
+    setPhotoPositions(initial)
+    positionsInitialised.current = true
+  }, [loading, photos])
+
+  const handlePositionChange = (photoId, newPos) => {
+    setPhotoPositions(prev => {
+      const next = { ...prev, [photoId]: newPos }
+      savePositions(next)
+      return next
+    })
+  }
+
+  const ropes = [
+    { top: '18%' },
+    { top: '44%' },
+    { top: '70%' },
+  ]
+
+  return (
+    <div style={{ position: 'relative', minHeight: '100vh', overflow: 'hidden', background: 'var(--midnight)' }}>
+
+      {/* Music prompt (fixed overlay, shown before first interaction) */}
+      {audioReady && needsPrompt && (
+        <MusicControl
+          audioReady={audioReady} isPlaying={isPlaying}
+          needsPrompt={needsPrompt} volume={volume}
+          togglePlay={togglePlay} setVolume={setVolume} startMusic={startMusic}
+        />
+      )}
+
+      <StarField count={80} />
+      <div style={{
+        position: 'fixed', inset: 0, zIndex: 0,
+        background: 'radial-gradient(ellipse at 50% 20%, rgba(15,32,68,0.8) 0%, rgba(5,11,26,1) 70%)',
+        pointerEvents: 'none',
+      }} />
+
+      <FairyLights count={30} />
+
+      <main style={{ position: 'relative', zIndex: 1, padding: '20px' }}>
+        {/* Header */}
+        <div style={{
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          maxWidth: '1200px', margin: '0 auto 32px',
+        }}>
+          <button
+            onClick={() => navigate('/game')}
+            className="btn btn-ghost"
+            style={{ padding: '8px 14px', fontSize: '13px' }}
+          >
+            ← Back
+          </button>
+          <div style={{ textAlign: 'center', flex: 1, padding: '0 20px' }}>
+            <h1 style={{
+              fontFamily: 'Playfair Display, serif',
+              fontSize: 'clamp(1.5rem, 4vw, 2.2rem)',
+              background: 'linear-gradient(135deg, #f0d06a, #c9a84c)',
+              WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
+            }}>
+              OUR LITTLE WALL
+            </h1>
+            <p style={{ color: 'rgba(200,215,255,0.4)', fontSize: '14px', marginTop: '4px', fontStyle: 'italic' }}>
+              "Some memories don't need captions."
+            </p>
+          </div>
+          <div style={{ width: '80px' }} />
+        </div>
+
+        {loading ? (
+          <div style={{ textAlign: 'center', padding: '80px', color: 'rgba(200,215,255,0.4)' }}>
+            Loading memories...
+          </div>
+        ) : (
+          <div
+            ref={wallRef}
+            style={{
+              position: 'relative',
+              width: '100%', maxWidth: '1200px',
+              margin: '0 auto',
+              height: '85vh', minHeight: '500px',
+              background: 'rgba(10,18,35,0.6)',
+              borderRadius: '20px',
+              border: '1px solid rgba(255,255,255,0.06)',
+              overflow: 'hidden',
+            }}
+          >
+            {/* Music control inside wall (after autoplay succeeds) */}
+            {audioReady && !needsPrompt && (
+              <MusicControl
+                audioReady={audioReady} isPlaying={isPlaying}
+                needsPrompt={needsPrompt} volume={volume}
+                togglePlay={togglePlay} setVolume={setVolume} startMusic={startMusic}
+              />
+            )}
+
+            {/* Decorative wall texture */}
+            <div style={{
+              position: 'absolute', inset: 0,
+              backgroundImage: 'repeating-linear-gradient(0deg, transparent, transparent 39px, rgba(255,255,255,0.02) 39px, rgba(255,255,255,0.02) 40px)',
+              pointerEvents: 'none', borderRadius: '20px',
+            }} />
+
+            {/* Horizontal ropes */}
+            {ropes.map((rope, i) => (
+              <div key={i} style={{
+                position: 'absolute', left: '2%', right: '2%',
+                top: rope.top, height: '3px',
+                background: 'rgba(180,160,120,0.3)',
+                borderRadius: '2px', zIndex: 0,
+              }}>
+                {Array.from({ length: 18 }, (_, j) => {
+                  const hue = (j * 25) % 360
+                  return (
+                    <div key={j} style={{
+                      position: 'absolute',
+                      left: `${(j / 17) * 96 + 2}%`,
+                      top: '0px',
+                      width: '5px', height: '6px',
+                      borderRadius: '50% 50% 50% 50% / 60% 60% 40% 40%',
+                      background: `hsl(${hue}, 75%, 65%)`,
+                      boxShadow: `0 0 5px hsl(${hue}, 75%, 55%)`,
+                      animation: `twinkle ${1.5 + j * 0.2}s ease-in-out infinite`,
+                      animationDelay: `${j * 0.15}s`,
+                      transform: 'translateX(-50%)',
+                    }} />
+                  )
+                })}
+              </div>
+            ))}
+
+            {/* Photos */}
+            {photos.map((photo, i) => {
+              const layout   = getPhotoLayout(i, photos.length)
+              const position = photoPositions[photo.id]
+              // Don't render until we have a computed position (avoids flash at 0,0)
+              if (!position) return null
+              return (
+                <DraggablePhoto
+                  key={photo.id}
+                  photo={photo}
+                  layout={layout}
+                  position={position}
+                  onPositionChange={handlePositionChange}
+                  onClick={() => setLightboxIndex(i)}
+                />
+              )
+            })}
+
+            {photos.length === 0 && (
+              <div style={{
+                position: 'absolute', inset: 0,
+                display: 'flex', flexDirection: 'column',
+                alignItems: 'center', justifyContent: 'center',
+                color: 'rgba(200,215,255,0.3)',
+              }}>
+                <div style={{ fontSize: '48px', marginBottom: '12px' }}>📷</div>
+                <p>No photos yet. Add photos to <code>/public/photos/</code></p>
+              </div>
+            )}
+          </div>
+        )}
+
+        <p style={{
+          textAlign: 'center', marginTop: '16px',
+          color: 'rgba(200,215,255,0.3)', fontSize: '13px',
+        }}>
+          Drag photos around · Click to enlarge
+        </p>
+      </main>
+
+      {/* Lightbox */}
+      <AnimatePresence>
+        {lightboxIndex !== null && (
+          <Lightbox
+            photos={photos}
+            currentIndex={lightboxIndex}
+            onClose={() => setLightboxIndex(null)}
+            onNext={() => setLightboxIndex(prev => (prev + 1) % photos.length)}
+            onPrev={() => setLightboxIndex(prev => (prev - 1 + photos.length) % photos.length)}
+          />
+        )}
+      </AnimatePresence>
+    </div>
+  )
+}

@@ -1,0 +1,325 @@
+import { useState } from 'react'
+import { motion } from 'framer-motion'
+import { useNavigate } from 'react-router-dom'
+import StarField from '../components/StarField'
+
+const storyChapters = [
+  {
+    id: 'childhood',
+    emoji: '🌱',
+    number: '01',
+    title: 'Mitti Ke Din',
+    subtitle: 'Bachpan',
+    lines: [
+      'Ek angan tha.',
+      'Thodi si mitti thi.',
+      'Aur do bacchiyaan thi jo us mitti se poori duniya banaa leti thi.',
+      'Ghar bante the. Rasoi banti thi. Kahaaaniyaan banti thi.',
+      'Koi toy nahi. Koi screen nahi. Sirf hum dono aur imagination ki koi seema nahi.',
+    ],
+  },
+  {
+    id: 'room',
+    emoji: '🚪',
+    number: '02',
+    title: 'Ek Kamra, Do Bahenen',
+    subtitle: 'Woh Chhoti Si Duniya',
+    lines: [
+      'Ek hi kamra.',
+      'Ek hi almirah.',
+      'Ek hi lipstick — jo hamesha ek taraf se dusri taraf chali jaati thi.',
+      'Lines khiche the — "Yeh mera side, yeh tumhara."',
+      'Raat ko thanda lagta tha toh woh lines kahin kho jaati thi.',
+      'Fights thi. Makeup ke liye. Clothes ke liye. Remote ke liye.',
+      'Lekin woh fights bhi ek tarah ka love tha — ab samajh aa raha hai.',
+    ],
+  },
+  {
+    id: 'court',
+    emoji: '⚖️',
+    number: '03',
+    title: 'Family Court',
+    subtitle: 'Judge: Mummy',
+    lines: [
+      'Teen siblings.',
+      'Ek Mummy.',
+      'Aur ek aisi court jahan case hamesha ek hi taraf jaata tha.',
+      'Hum dono mil jaate the. Bhaiya ke khilaf ya Bhaiya ke saath — depend karta tha.',
+      'Lekin verdict toh pehle se tay hota tha.',
+      'BHAIYA AGAIN. 😂',
+    ],
+  },
+  {
+    id: 'operation',
+    emoji: '🤫',
+    number: '04',
+    title: 'Operation Jiju',
+    subtitle: 'Sabse Bada Secret',
+    lines: [
+      'Ek secret operation tha.',
+      'Jiju ka aana. Pooja Didi ka bahaana.',
+      'Mummy ko pata nahi tha.',
+      'Lekin mujhe sab pata tha.',
+      'Chup-chaap. Muskura ke. Door se note le raha tha ek insaan.',
+      'Sudha ki aankhon se kuch nahi bachta tha. 👀',
+    ],
+  },
+  {
+    id: 'vidai',
+    emoji: '🌸',
+    number: '05',
+    title: 'Woh Din',
+    subtitle: 'Vidai',
+    lines: [
+      'Shadi thi.',
+      'Khushi thi. Aansu bhi the.',
+      'Woh almirah band ho gayi.',
+      'Woh side sunni ho gayi.',
+      'Kamra wahi tha. Lekin kuch nahi tha jo pehle tha.',
+      'Tab pata chala — jo cheez "common" lagi thi, woh actually rare thi.',
+    ],
+  },
+  {
+    id: 'shivay',
+    emoji: '🍼',
+    number: '06',
+    title: 'Phir Shivay Aaya',
+    subtitle: 'Maasi Chapter',
+    lines: [
+      'Technically meri Pooja Didi ka beta.',
+      'Technically mera bhaanja.',
+      'Lekin dil mein? Dil mein kuch alag hi tha.',
+      'Maasi hona ek alag hi cheez hai — bilkul alag.',
+      'Aur woh "special surprise" jo har baar god mein lete milta tha? 💀',
+      'Woh bhi ek nayab yaad ban gayi. 😂❤️',
+    ],
+  },
+  {
+    id: 'college',
+    emoji: '📚',
+    number: '07',
+    title: 'The Didi I Understood Later',
+    subtitle: 'College Wala Waqt',
+    lines: [
+      'College admission. Controversy. Sab ke sab against the.',
+      'Didi ne bhi daanta. Toh Sudha ne socha — "Didi bhi mere against hai?"',
+      'But time ke saath woh "daant" ka matlab samajh aaya.',
+      'Daant ke peeche pyar tha. Concern tha.',
+      'Woh nahi chahti thi ki galat decision ho.',
+      'Tab nahi samjhi. Ab samajh aata hai.',
+      'Aur shayad isi ko Didi hona kehte hain.',
+    ],
+  },
+]
+
+const thingsWeDontSay = [
+  '"Tu sirf kisi ki wife nahi. Sirf kisi ki mummy nahi. Tu meri Didi hai."',
+  '"Daant ke baad bhi — sab se pehle tujhe hi call karti hoon."',
+  '"Woh kamra khaali tha jab tu gayi. Aaj bhi kabhi kabhi lagta hai."',
+  '"Shivay ko god mein lete hi jo feeling hoti hai — woh sirf Maasi waali hai."',
+  '"I love you" zyada nahi kehti. Lekin it\'s there. Always.',
+]
+
+function ChapterCard({ chapter, index }) {
+  const [expanded, setExpanded] = useState(false)
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 30 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: index * 0.08 }}
+      onClick={() => setExpanded(e => !e)}
+      style={{
+        background: expanded ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.03)',
+        border: `1px solid ${expanded ? 'rgba(240,208,106,0.25)' : 'rgba(255,255,255,0.08)'}`,
+        borderRadius: '16px',
+        padding: '20px 24px',
+        cursor: 'pointer',
+        transition: 'all 0.3s',
+        marginBottom: '12px',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+        <span style={{ fontSize: '28px', flexShrink: 0 }}>{chapter.emoji}</span>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: '11px', color: 'rgba(200,215,255,0.4)', letterSpacing: '2px', textTransform: 'uppercase' }}>
+            {chapter.number}
+          </div>
+          <div style={{
+            fontFamily: 'Playfair Display, serif',
+            fontSize: 'clamp(1rem, 3vw, 1.2rem)',
+            color: '#f8f9ff',
+            lineHeight: 1.2,
+          }}>
+            {chapter.title}
+          </div>
+          <div style={{ fontSize: '12px', color: 'rgba(200,215,255,0.45)', marginTop: '2px' }}>
+            {chapter.subtitle}
+          </div>
+        </div>
+        <div style={{ color: 'rgba(200,215,255,0.3)', fontSize: '18px', flexShrink: 0 }}>
+          {expanded ? '↑' : '↓'}
+        </div>
+      </div>
+
+      {expanded && (
+        <motion.div
+          initial={{ opacity: 0, height: 0 }}
+          animate={{ opacity: 1, height: 'auto' }}
+          style={{ overflow: 'hidden', marginTop: '20px', paddingTop: '16px', borderTop: '1px solid rgba(255,255,255,0.07)' }}
+        >
+          {chapter.lines.map((line, i) => (
+            <motion.p
+              key={i}
+              initial={{ opacity: 0, x: -8 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: i * 0.07 }}
+              style={{
+                color: 'rgba(200,215,255,0.78)',
+                lineHeight: 1.85,
+                fontSize: 'clamp(0.9rem, 2.5vw, 1rem)',
+                marginBottom: '8px',
+                paddingLeft: '8px',
+                borderLeft: '2px solid rgba(240,208,106,0.2)',
+              }}
+            >
+              {line}
+            </motion.p>
+          ))}
+        </motion.div>
+      )}
+    </motion.div>
+  )
+}
+
+export default function OurStory() {
+  const navigate = useNavigate()
+
+  return (
+    <div style={{ position: 'relative', minHeight: '100vh', overflow: 'hidden' }}>
+      <StarField count={80} />
+      <div style={{
+        position: 'fixed', inset: 0, zIndex: 0,
+        background: 'radial-gradient(ellipse at 50% 0%, rgba(99,16,60,0.35) 0%, rgba(5,11,26,1) 60%)',
+        pointerEvents: 'none',
+      }} />
+
+      <main style={{ position: 'relative', zIndex: 1, maxWidth: '720px', margin: '0 auto', padding: 'clamp(32px, 6vw, 60px) 20px' }}>
+
+        {/* Back */}
+        <button
+          onClick={() => navigate(-1)}
+          style={{ background: 'none', border: 'none', color: 'rgba(200,215,255,0.4)', cursor: 'pointer', fontSize: '13px', marginBottom: '32px', display: 'block' }}
+        >
+          ← Wapas
+        </button>
+
+        {/* Header */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          style={{ textAlign: 'center', marginBottom: '48px' }}
+        >
+          <div style={{ fontSize: '48px', marginBottom: '16px' }}>🌸</div>
+          <h1 style={{
+            fontFamily: 'Playfair Display, serif',
+            fontSize: 'clamp(2rem, 6vw, 3rem)',
+            background: 'linear-gradient(135deg, #f0d06a, #e8a0b0)',
+            WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
+            marginBottom: '12px',
+          }}>
+            Humari Kahani
+          </h1>
+          <p style={{ color: 'rgba(200,215,255,0.55)', fontSize: '15px', lineHeight: 1.7 }}>
+            Pooja Didi aur Sudha ki —<br />
+            Do bahenen. Ek kahani.
+          </p>
+        </motion.div>
+
+        {/* Chapters */}
+        <div style={{ marginBottom: '60px' }}>
+          {storyChapters.map((chapter, i) => (
+            <ChapterCard key={chapter.id} chapter={chapter} index={i} />
+          ))}
+        </div>
+
+        {/* Things we don't say */}
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.6 }}
+          style={{ marginBottom: '60px' }}
+        >
+          <h2 style={{
+            fontFamily: 'Playfair Display, serif',
+            fontSize: 'clamp(1.3rem, 4vw, 1.8rem)',
+            color: '#f0d06a',
+            marginBottom: '24px',
+            textAlign: 'center',
+          }}>
+            ❤️ Jo Bolte Nahi, Woh Bhi Sach Hai
+          </h2>
+
+          {thingsWeDontSay.map((text, i) => (
+            <motion.div
+              key={i}
+              initial={{ opacity: 0, x: -16 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: 0.7 + i * 0.1 }}
+              style={{
+                padding: '14px 20px',
+                marginBottom: '10px',
+                background: 'rgba(255,255,255,0.03)',
+                border: '1px solid rgba(240,208,106,0.1)',
+                borderLeft: '3px solid rgba(240,208,106,0.4)',
+                borderRadius: '10px',
+                fontSize: 'clamp(0.88rem, 2.5vw, 1rem)',
+                color: 'rgba(200,215,255,0.75)',
+                lineHeight: 1.7,
+                fontStyle: 'italic',
+              }}
+            >
+              {text}
+            </motion.div>
+          ))}
+        </motion.div>
+
+        {/* Closing line */}
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 1.1 }}
+          style={{ textAlign: 'center', marginBottom: '40px' }}
+        >
+          <p style={{
+            fontFamily: 'Playfair Display, serif',
+            fontSize: 'clamp(1.1rem, 3vw, 1.4rem)',
+            color: '#f0d06a',
+            fontStyle: 'italic',
+          }}>
+            "Apni real Didi, apni hoti hai."
+          </p>
+          <p style={{ color: 'rgba(200,215,255,0.35)', fontSize: '13px', marginTop: '8px' }}>
+            — Sudha Goma Chudail ❤️
+          </p>
+        </motion.div>
+
+        {/* Nav */}
+        <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
+          <button onClick={() => navigate('/wall')} className="btn btn-ghost">
+            📸 Memory Wall
+          </button>
+          <button onClick={() => navigate('/birthday')} className="btn btn-ghost">
+            🎂 Birthday Surprise
+          </button>
+        </div>
+
+        {/* Footer */}
+        <div style={{ marginTop: '60px', textAlign: 'center', color: 'rgba(200,215,255,0.2)', fontSize: '13px' }}>
+          Banaya gaya Sudha ne 🤍 Pooja Didi ke 26th Birthday ke liye
+        </div>
+
+      </main>
+    </div>
+  )
+}
